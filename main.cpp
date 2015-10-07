@@ -1,7 +1,15 @@
 #include <iostream>
 #include <vector>
 #include <unordered_map>
-#include <stdlib.h>
+#include <limits>
+
+#define operator_new(Class)\
+    void* operator new(size_t size) {\
+        return GCUtils::default_gc->gcalloc<Class>();\
+    }\
+    void* operator new(size_t size, char* addr) {\
+        return addr;\
+    }
 
 using namespace std;
 
@@ -26,35 +34,29 @@ namespace GarbageCollection {
         ref_type ref;
         size_type size;
         unsigned char id;
-        GC* gc;
 
-        GCRef(GC* gc, ref_type ref) :
+        /*GCRef(GC* gc, ref_type ref) :
                 ref(ref),
                 size(sizeof(T)),
                 id(0),
                 gc(gc)
-        {}
+        {}*/
     public:
-
         T& operator*();
         T* operator->();
+        GCRef(T* ptr);
+        GCRef(const GCRef<T>& other);
+        GCRef<T>& operator=(const GCRef<T>& other);
+        ~GCRef();
 
         GCRef() :
-                ref(0),
+                ref(numeric_limits<ref_type>::max()),
                 size(0),
-                id(0),
-                gc(nullptr)
+                id(0)
         {}
 
-        GCRef(void* ptr) :
-                ref((ref_type) ptr),
-                size(sizeof(T)),
-                id(0),
-                gc(GCUtils::default_gc)
-        {}
-
-        operator bool() {
-            return gc != nullptr;
+        operator bool() const {
+            return size != 0;
         }
 
         friend class GC;
@@ -66,12 +68,14 @@ namespace GarbageCollection {
         virtual ~GCObject() {}
     };
 
-    class GC {
+    struct GC {
         char* heap;
         char* oldgen;
         size_type heap_size;
         size_type oldgen_size;
         size_type pos;
+        unordered_map<ref_type, size_type> ref_count;
+        unordered_map<size_type, bool> offset;
     public:
         GC(size_type heap_size, size_type oldgen_size) :
                 heap(new char[heap_size]),
@@ -86,33 +90,88 @@ namespace GarbageCollection {
             delete[] oldgen;
         }
 
+        template <typename T>
+        void* gcalloc() {
+            size_type allocated_pos = pos;
+            offset[pos] = false;
+            pos += sizeof(T);
+            return (void*) (heap + allocated_pos);
+        }
+
         template <typename T, typename ... Ts>
         GCRef<T> gcnew(Ts ... ts) {
-            size_type allocated_pos = pos;
-            new (heap + pos) T(ts...);
-            pos += sizeof(T);
-            return GCRef<T>(this, allocated_pos);
+            char* addr = (char*) gcalloc<T>();
+            new (addr) T(ts...);
+            return GCRef<T>((T*) addr);
+        }
+
+        void gc() {
+            // TODO
         }
 
         template <typename T> friend class GCRef;
     };
 
     template <typename T>
+    GCRef<T>::GCRef(T* ptr) :
+            ref((ref_type) ptr - (ref_type) GCUtils::default_gc->heap),
+            size(sizeof(T)),
+            id(0)
+    {
+        GCUtils::default_gc->ref_count[ref]++;
+    }
+
+    template <typename T>
+    GCRef<T>::GCRef(const GCRef<T>& other) {
+        if (other) {
+            GCUtils::default_gc->ref_count[other.ref]++;
+        }
+        ref = other.ref;
+        size = other.size;
+        id = other.id;
+    }
+
+    template <typename T>
+    GCRef<T>& GCRef<T>::operator=(const GCRef<T>& other) {
+        if (*this) {
+            GCUtils::default_gc->ref_count[ref]--;
+        }
+        if (other) {
+            GCUtils::default_gc->ref_count[other.ref]++;
+        }
+        ref = other.ref;
+        size = other.size;
+        id = other.id;
+        return *this;
+    }
+
+    template <typename T>
     T& GCRef<T>::operator*() {
         switch (id) {
-            case 0: return (T&) gc->heap[ref];
-            default: return (T&) gc->oldgen[ref];
+            case 0: return (T&) GCUtils::default_gc->heap[ref];
+            default: return (T&) GCUtils::default_gc->oldgen[ref];
         }
     }
 
     template <typename T>
     T* GCRef<T>::operator->() {
         switch (id) {
-            case 0: return (T*) &gc->heap[ref];
-            default: return (T*) &gc->oldgen[ref];
+            case 0: return (T*) &GCUtils::default_gc->heap[ref];
+            default: return (T*) &GCUtils::default_gc->oldgen[ref];
         }
     }
 
+    template <typename T>
+    GCRef<T>::~GCRef() {
+        if (*this) {
+            GCUtils::default_gc->ref_count[ref]--;
+        }
+    }
+
+    template <typename T>
+    void null(GCRef<T>& ref) {
+        ref = GCRef<T>();
+    }
 }
 
 using namespace GarbageCollection;
@@ -139,20 +198,7 @@ public:
 
     }
 
-    /*template <typename ... Ts>
-    void* operator new(Ts ... ts) {
-        vector<int>* kek = (vector<int>*) malloc(sizeof(vector<int>));
-        new (kek) vector<int>(ts...);
-        return kek;
-    }*/
-
-    void* operator new(size_t size) {
-        return (void*) 42;
-    }
-
-    void* operator new(size_t size, char* addr) {
-        return (void*) 0;
-    }
+    operator_new(Node)
 
     vector<GCRef<GCObject>*> refs() override {
         return vector<GCRef<GCObject>*>(
@@ -177,22 +223,34 @@ void print_tree(GCRef<Node> root) {
     level.pop_back();
 }
 
-
 GC gc(1024, 1024);
 GC* GCUtils::default_gc = &gc;
 
+template <typename U, typename V>
+void print(unordered_map<U, V> map) {
+    cout << "[";
+    for (auto& entry: map) {
+        cout << "(" << entry.first << ", " << entry.second << "), ";
+    }
+    cout << "]" << endl;
+};
+
 int main() {
 
-    Node* kek = new Node();
-    cout << (uint64_t) kek << endl;
+    GCRef<Node> kek = new Node(562);
+    cout << kek->c << endl;
 
-    GCRef<Node> a = gc.gcnew<Node>(42);
-    GCRef<Node> b = gc.gcnew<Node>(69);
-    GCRef<Node> c = gc.gcnew<Node>(142);
-    GCRef<Node> d = gc.gcnew<Node>(169);
-    GCRef<Node> ab = gc.gcnew<Node>(a, b, 0);
-    GCRef<Node> cd = gc.gcnew<Node>(c, d, 0);
-    GCRef<Node> abcd = gc.gcnew<Node>(ab, cd, 0);
+    GCRef<Node> a = new Node(42);
+    GCRef<Node> b = new Node(69);
+    GCRef<Node> c = new Node(142);
+    GCRef<Node> d = new Node(169);
+    GCRef<Node> ab = new Node(a, b, 0);
+    GCRef<Node> cd = new Node(c, d, 0);
+    GCRef<Node> abcd = new Node(ab, cd, 0);
+
     print_tree(abcd);
+
+    null(abcd);
+
     return 0;
 }
