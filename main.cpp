@@ -3,6 +3,8 @@
 #include <unordered_map>
 #include <limits>
 
+#define class struct
+
 #define operator_new(Class)\
     void* operator new(size_t size) {\
         return GCUtils::default_gc->gcalloc<Class>();\
@@ -12,6 +14,15 @@
     }
 
 using namespace std;
+
+template <typename U, typename V>
+void print(unordered_map<U, V> map) {
+    cout << "[";
+    for (auto& entry: map) {
+        cout << "(" << entry.first << ", " << entry.second << "), ";
+    }
+    cout << "]" << endl;
+};
 
 namespace GarbageCollection {
 
@@ -33,14 +44,7 @@ namespace GarbageCollection {
     class GCRef {
         ref_type ref;
         size_type size;
-        unsigned char id;
 
-        /*GCRef(GC* gc, ref_type ref) :
-                ref(ref),
-                size(sizeof(T)),
-                id(0),
-                gc(gc)
-        {}*/
     public:
         T& operator*();
         T* operator->();
@@ -51,8 +55,7 @@ namespace GarbageCollection {
 
         GCRef() :
                 ref(numeric_limits<ref_type>::max()),
-                size(0),
-                id(0)
+                size(0)
         {}
 
         operator bool() const {
@@ -68,26 +71,21 @@ namespace GarbageCollection {
         virtual ~GCObject() {}
     };
 
-    struct GC {
+    class GC {
         char* heap;
-        char* oldgen;
         size_type heap_size;
-        size_type oldgen_size;
         size_type pos;
         unordered_map<ref_type, size_type> ref_count;
         unordered_map<size_type, bool> offset;
     public:
-        GC(size_type heap_size, size_type oldgen_size) :
+        GC(size_type heap_size) :
                 heap(new char[heap_size]),
-                oldgen(new char[oldgen_size]),
                 heap_size(heap_size),
-                oldgen_size(oldgen_size),
                 pos(0)
         {}
 
         ~GC() {
             delete[] heap;
-            delete[] oldgen;
         }
 
         template <typename T>
@@ -105,8 +103,26 @@ namespace GarbageCollection {
             return GCRef<T>((T*) addr);
         }
 
+        void dfs(GCObject* object) {
+            offset[(ref_type) object - (ref_type) heap] = true;
+            for (auto& ref: object->refs()) {
+                if (!*ref) {
+                    continue;
+                }
+                if (!offset[ref->ref]) {
+                    dfs((GCObject*) &heap[ref->ref]);
+                }
+            }
+        }
+
         void gc() {
-            // TODO
+            for (auto& entry: ref_count) {
+                if (entry.second > 0) {
+                    cout << entry.first << " " << entry.second << endl;
+                    dfs((GCObject*) &heap[entry.first]);
+                }
+            }
+            print(offset);
         }
 
         template <typename T> friend class GCRef;
@@ -115,10 +131,10 @@ namespace GarbageCollection {
     template <typename T>
     GCRef<T>::GCRef(T* ptr) :
             ref((ref_type) ptr - (ref_type) GCUtils::default_gc->heap),
-            size(sizeof(T)),
-            id(0)
+            size(sizeof(T))
     {
         GCUtils::default_gc->ref_count[ref]++;
+        cout << "Oo " << ref << endl;
     }
 
     template <typename T>
@@ -128,7 +144,6 @@ namespace GarbageCollection {
         }
         ref = other.ref;
         size = other.size;
-        id = other.id;
     }
 
     template <typename T>
@@ -141,24 +156,17 @@ namespace GarbageCollection {
         }
         ref = other.ref;
         size = other.size;
-        id = other.id;
         return *this;
     }
 
     template <typename T>
     T& GCRef<T>::operator*() {
-        switch (id) {
-            case 0: return (T&) GCUtils::default_gc->heap[ref];
-            default: return (T&) GCUtils::default_gc->oldgen[ref];
-        }
+        return (T&) GCUtils::default_gc->heap[ref];
     }
 
     template <typename T>
     T* GCRef<T>::operator->() {
-        switch (id) {
-            case 0: return (T*) &GCUtils::default_gc->heap[ref];
-            default: return (T*) &GCUtils::default_gc->oldgen[ref];
-        }
+        return (T*) &GCUtils::default_gc->heap[ref];
     }
 
     template <typename T>
@@ -223,22 +231,12 @@ void print_tree(GCRef<Node> root) {
     level.pop_back();
 }
 
-GC gc(1024, 1024);
+GC gc(1024);
 GC* GCUtils::default_gc = &gc;
-
-template <typename U, typename V>
-void print(unordered_map<U, V> map) {
-    cout << "[";
-    for (auto& entry: map) {
-        cout << "(" << entry.first << ", " << entry.second << "), ";
-    }
-    cout << "]" << endl;
-};
 
 int main() {
 
     GCRef<Node> kek = new Node(562);
-    cout << kek->c << endl;
 
     GCRef<Node> a = new Node(42);
     GCRef<Node> b = new Node(69);
@@ -250,7 +248,15 @@ int main() {
 
     print_tree(abcd);
 
-    null(abcd);
+    null(a);
+    null(b);
+    null(c);
+    null(d);
+    null(ab);
+    null(cd);
+    null(kek);
+
+    GCUtils::default_gc->gc();
 
     return 0;
 }
